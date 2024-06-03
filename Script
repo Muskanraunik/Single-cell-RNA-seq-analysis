@@ -1,0 +1,59 @@
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+setwd = ("D:\\project\\BC10\\files")
+dataset_path <- "D:\\project\\BC10\\files" 
+list.files(dataset_path)
+sc_data <- Read10X(data.dir = dataset_path)
+seurat_object <- CreateSeuratObject(counts = sc_data, project = "SingleCellProject")
+
+#   QUALITY CONTROL
+# calculating the percentage of mitochondrial genes
+seurat_object[["percent.mt"]] <- PercentageFeatureSet(seurat_object, pattern = "^MT-")
+# Filtering cells 
+#nFeature_RNA - number of genes (features) detected per cell
+#nCount_RNA -  total counts (UMIs) per cell.
+seurat_object <- subset(seurat_object, subset = nFeature_RNA > 200 & nCount_RNA > 2500 & percent.mt < 7)
+# Normalize the data
+seurat_object <- NormalizeData(seurat_object)
+
+# Identify highly variable genes
+seurat_object <- FindVariableFeatures(seurat_object, selection.method = "vst", nfeatures = 1500)
+seurat_object <- ScaleData(seurat_object, features = rownames(seurat_object))
+
+# PCA PLOT
+seurat_object <- RunPCA(seurat_object, features = VariableFeatures(object = seurat_object))
+DimPlot(seurat_object, reduction = "pca", dims = c(1, 2)) + ggtitle("PCA Plot")
+
+
+# Clustering
+seurat_object <- FindNeighbors(seurat_object, dims = 1:6)
+seurat_object <- FindClusters(seurat_object, resolution = 0.5)
+seurat_object <- RunUMAP(seurat_object, dims = 1:6)
+DimPlot(seurat_object, reduction = "umap", label = TRUE)
+
+# Identify marker genes for each cluster
+cluster_markers <- FindAllMarkers(seurat_object, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(cluster_markers, file = "cluster_markers.csv", row.names = TRUE)
+# annotations
+library(SingleR)
+library(celldex)
+reference <- celldex::HumanPrimaryCellAtlasData()
+predictions <- SingleR(test = GetAssayData(seurat_object, slot = "data"), ref = reference, labels = reference$label.main)
+seurat_object[["SingleR.labels"]] <- predictions$labels
+DimPlot(seurat_object, group.by = "SingleR.labels", reduction = "umap", label = TRUE, pt.size = 1) +
+  ggtitle("Annotation with SingleR") +
+  theme(legend.title = element_text(size = 12), legend.text = element_text(size = 10))
+
+#Differential gene expression between Monocyte and T_cells
+library(MAST)
+table(seurat_object$SingleR.labels)
+cell_type1 <- "Monocyte"
+cell_type2 <- "T_cells"
+markers <- FindMarkers(seurat_object, ident.1 = cell_type1, ident.2 = cell_type2, group.by = "SingleR.labels", test.use = "MAST")
+
+# expression of top five differentially expressed genes across all the cell types
+significant_markers <- markers[markers$p_val_adj < 0.05 & abs(markers$avg_log2FC) > 0.5, ]
+top_markers <- head(rownames(significant_markers), 5)
+VlnPlot(seurat_object, features = top_markers, group.by = "SingleR.labels")
+
